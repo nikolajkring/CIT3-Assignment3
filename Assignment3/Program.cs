@@ -2,6 +2,10 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.IO;
 
 namespace Assignment3
 {
@@ -10,9 +14,13 @@ namespace Assignment3
         static void Main(string[] args)
         {
             Console.WriteLine("Hello Web Service :-)");
-        }
-    }
 
+            int port = 5000;
+            var server = new EchoServer(port);
+            server.Run();
+        }
+        
+    }
     public class Request
     {
         public string Method { get; set; }
@@ -41,26 +49,20 @@ namespace Assignment3
 
         public bool ParseUrl(string url)
         {
-            if (string.IsNullOrEmpty(url))
-                return false;
+            if (string.IsNullOrWhiteSpace(url)) return false;
 
             var parts = url.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            
-            if (parts.Length < 2)
-                return false;
 
-            // Check if last part is numeric (ID)
-            if (parts.Length >= 3 && int.TryParse(parts[parts.Length - 1], out _))
+            if (parts.Length > 1 && int.TryParse(parts.Last(), out _))
             {
                 HasId = true;
-                Id = parts[parts.Length - 1];
-                Path = "/" + string.Join("/", parts.Take(parts.Length - 1));
+                Id = parts.Last();
+                Path = "/" + string.Join('/', parts.Take(parts.Length - 1));
             }
             else
             {
                 HasId = false;
-                Id = null;
-                Path = url;
+                Path = "/" + string.Join('/', parts);
             }
 
             return true;
@@ -69,117 +71,136 @@ namespace Assignment3
 
     public class RequestValidator
     {
-        private readonly string[] validMethods = { "create", "read", "update", "delete", "echo" };
+        private readonly HashSet<string> _validMethods =
+            new() { "create", "read", "update", "delete", "echo" };
 
         public Response ValidateRequest(Request request)
         {
-            // Check method
-            if (string.IsNullOrEmpty(request.Method))
-            {
-                return new Response { Status = "4 Bad Request missing method" };
-            }
+            var errors = new List<string>();
 
-            if (!validMethods.Contains(request.Method.ToLower()))
-            {
-                return new Response { Status = "4 Bad Request illegal method" };
-            }
+            if (string.IsNullOrWhiteSpace(request.Method))
+                errors.Add("missing method");
+            else if (!_validMethods.Contains(request.Method.ToLower()))
+                errors.Add("illegal method");
 
-            // Check path
-            if (string.IsNullOrEmpty(request.Path))
-            {
-                return new Response { Status = "4 Bad Request missing path" };
-            }
+            if (string.IsNullOrWhiteSpace(request.Path))
+                errors.Add("missing path");
 
-            // Check date
-            if (string.IsNullOrEmpty(request.Date))
-            {
-                return new Response { Status = "4 Bad Request missing date" };
-            }
+            if (string.IsNullOrWhiteSpace(request.Date))
+                errors.Add("missing date");
+            else if (!long.TryParse(request.Date, out _))
+                errors.Add("illegal date");
 
-            // Validate date format (should be Unix timestamp)
-            if (!long.TryParse(request.Date, out _))
+            if (!string.IsNullOrWhiteSpace(request.Method))
             {
-                return new Response { Status = "4 Bad Request illegal date" };
-            }
-
-            // Check body for methods that require it
-            var methodsRequiringBody = new[] { "create", "update", "echo" };
-            if (methodsRequiringBody.Contains(request.Method.ToLower()))
-            {
-                if (string.IsNullOrEmpty(request.Body))
+                var method = request.Method.ToLower();
+                if (method is "create" or "update")
                 {
-                    return new Response { Status = "4 Bad Request missing body" };
+                    if (string.IsNullOrWhiteSpace(request.Body))
+                        errors.Add("missing body");
+                    else
+                    {
+                        try { JsonDocument.Parse(request.Body); }
+                        catch { errors.Add("illegal body"); }
+                    }
                 }
-
-                // For create and update, body should be valid JSON
-                if (request.Method.ToLower() == "create" || request.Method.ToLower() == "update")
+                else if (method == "echo" && string.IsNullOrWhiteSpace(request.Body))
                 {
-                    try
-                    {
-                        JsonDocument.Parse(request.Body);
-                    }
-                    catch
-                    {
-                        return new Response { Status = "4 Bad Request illegal body" };
-                    }
+                    errors.Add("missing body");
                 }
             }
 
-            return new Response { Status = "1 Ok" };
+            return new Response
+            {
+                Status = errors.Any() ? "4 " + string.Join(", ", errors) : "1 Ok"
+            };
         }
     }
 
     public class CategoryService
     {
-        private List<Category> categories;
+        private readonly List<Category> _categories;
 
         public CategoryService()
         {
-            categories = new List<Category>
+            _categories = new List<Category>
             {
-                new Category { Id = 1, Name = "Beverages" },
-                new Category { Id = 2, Name = "Condiments" },
-                new Category { Id = 3, Name = "Dairy Products" }
+                new() { Id = 1, Name = "Beverages" },
+                new() { Id = 2, Name = "Condiments" },
+                new() { Id = 3, Name = "Confections" }
             };
         }
 
-        public List<Category> GetCategories()
-        {
-            return categories.ToList();
-        }
+        public List<Category> GetCategories() => _categories.ToList();
 
-        public Category GetCategory(int id)
-        {
-            return categories.FirstOrDefault(c => c.Id == id);
-        }
+        public Category GetCategory(int id) =>
+            _categories.FirstOrDefault(c => c.Id == id);
 
-        public bool UpdateCategory(int id, string name)
+        public bool UpdateCategory(int id, string newName)
         {
-            var category = categories.FirstOrDefault(c => c.Id == id);
-            if (category == null)
-                return false;
-
-            category.Name = name;
+            var category = GetCategory(id);
+            if (category == null) return false;
+            category.Name = newName;
             return true;
         }
 
         public bool DeleteCategory(int id)
         {
-            var category = categories.FirstOrDefault(c => c.Id == id);
-            if (category == null)
-                return false;
-
-            categories.Remove(category);
+            var category = GetCategory(id);
+            if (category == null) return false;
+            _categories.Remove(category);
             return true;
         }
 
         public bool CreateCategory(int id, string name)
         {
-            if (categories.Any(c => c.Id == id))
-                return false;
-
-            categories.Add(new Category { Id = id, Name = name });
+            if (_categories.Any(c => c.Id == id)) return false;
+            _categories.Add(new Category { Id = id, Name = name });
             return true;
         }
     }
+
+    // Part2test
+    public class EchoServer
+    {
+
+        TcpListener _server;
+
+        public int Port { get; set; }
+
+        public EchoServer(int port)
+        {
+            Port = port;
+        }
+
+        public void Run()
+        {
+            _server = new TcpListener(IPAddress.Loopback, Port);
+
+            _server.Start();
+            Console.WriteLine($"Server started on port {Port}");
+
+            while (true)
+            {
+                TcpClient client = _server.AcceptTcpClient();
+                Console.WriteLine("Client connected");
+                HandleClient(client);
+            }
+        }
+
+         private void HandleClient(TcpClient client)
+        {
+            var stream = client.GetStream();
+
+            var msg = "Hello form server";
+
+            stream.Write(Encoding.UTF8.GetBytes(msg));
+
+        }
+
+
+    }
 }
+
+
+
