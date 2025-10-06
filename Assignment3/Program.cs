@@ -184,18 +184,8 @@ namespace Assignment3
             {
                 TcpClient client = _server.AcceptTcpClient();
                 Console.WriteLine("Client connected");
-                HandleClient(client);
+                // HandleClient(client);
             }
-        }
-
-         private void HandleClient(TcpClient client)
-        {
-            var stream = client.GetStream();
-
-            var msg = "Hello form server";
-
-            stream.Write(Encoding.UTF8.GetBytes(msg));
-
         }
 
 
