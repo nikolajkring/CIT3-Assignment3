@@ -1,12 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace Assignment3
@@ -16,11 +15,12 @@ namespace Assignment3
         static void Main(string[] args)
         {
             Console.WriteLine("Hello Web Service :-)");
-            int port = 5001;
-            var server = new EchoServer(port);
+            var server = new EchoServer(5001);
             server.Run();
         }
     }
+
+    // Data Models
 
     public class Request
     {
@@ -44,6 +44,7 @@ namespace Assignment3
         public string Name { get; set; }
     }
 
+    // Url Parser
     public class UrlParser
     {
         public string Path { get; private set; }
@@ -72,324 +73,198 @@ namespace Assignment3
         }
     }
 
+    // Request validation
+
     public class RequestValidator
     {
-        private readonly HashSet<string> _validMethods =
-            new() { "create", "read", "update", "delete", "echo" };
+        private readonly HashSet<string> validMethods = new() { "create", "read", "update", "delete", "echo" };
 
-        public Response ValidateRequest(Request request)
+        public Response ValidateRequest(Request r)
         {
             var errors = new List<string>();
 
-            if (string.IsNullOrWhiteSpace(request.Method))
-                errors.Add("missing method");
-            else if (!_validMethods.Contains(request.Method.ToLower()))
-                errors.Add("illegal method");
+            if (string.IsNullOrWhiteSpace(r.Method)) errors.Add("missing method");
+            else if (!validMethods.Contains(r.Method.ToLower())) errors.Add("illegal method");
 
-            if (string.IsNullOrWhiteSpace(request.Path))
-                errors.Add("missing path");
+            if (string.IsNullOrWhiteSpace(r.Path)) errors.Add("missing path");
 
-            if (string.IsNullOrWhiteSpace(request.Date))
-                errors.Add("missing date");
-            else if (!long.TryParse(request.Date, out _))
-                errors.Add("illegal date");
+            if (string.IsNullOrWhiteSpace(r.Date)) errors.Add("missing date");
+            else if (!long.TryParse(r.Date, out _)) errors.Add("illegal date");
 
-            if (!string.IsNullOrWhiteSpace(request.Method))
+            if (r.Method?.ToLower() is "create" or "update" or "echo")
             {
-                var method = request.Method.ToLower();
-                if (method is "create" or "update")
+                if (string.IsNullOrWhiteSpace(r.Body)) errors.Add("missing body");
+                else
                 {
-                    if (string.IsNullOrWhiteSpace(request.Body))
-                        errors.Add("missing body");
-                    else
+                    if (r.Method.ToLower() != "echo")
                     {
-                        try { JsonDocument.Parse(request.Body); }
+                        try { JsonDocument.Parse(r.Body); }
                         catch { errors.Add("illegal body"); }
                     }
-                }
-                else if (method == "echo" && string.IsNullOrWhiteSpace(request.Body))
-                {
-                    errors.Add("missing body");
                 }
             }
 
             return new Response
             {
-                Status = errors.Any() ? "4 " + string.Join(", ", errors) : "1 Ok"
+                Status = errors.Count > 0 ? "4 " + string.Join(", ", errors) : "1 Ok"
             };
         }
     }
 
+    // Category Service 
+
     public class CategoryService
     {
-        private readonly List<Category> _categories;
-
-        public CategoryService()
+        private readonly List<Category> categories = new()
         {
-            _categories = new List<Category>
-            {
-                new() { Id = 1, Name = "Beverages" },
-                new() { Id = 2, Name = "Condiments" },
-                new() { Id = 3, Name = "Confections" }
-            };
-        }
+            new() { Id = 1, Name = "Beverages" },
+            new() { Id = 2, Name = "Condiments" },
+            new() { Id = 3, Name = "Confections" }
+        };
 
-        public List<Category> GetCategories() => _categories.ToList();
-        public Category GetCategory(int id) => _categories.FirstOrDefault(c => c.Id == id);
+        public List<Category> GetCategories() => categories.ToList();
+        public Category GetCategory(int id) => categories.FirstOrDefault(c => c.Id == id);
 
         public bool UpdateCategory(int id, string newName)
         {
-            var category = GetCategory(id);
-            if (category == null) return false;
-            category.Name = newName;
+            var c = GetCategory(id);
+            if (c == null) return false;
+            c.Name = newName;
             return true;
         }
 
         public bool DeleteCategory(int id)
         {
-            var category = GetCategory(id);
-            if (category == null) return false;
-            _categories.Remove(category);
+            var c = GetCategory(id);
+            if (c == null) return false;
+            categories.Remove(c);
             return true;
         }
-
-        // Part I overload (used by Part I tests)
         public bool CreateCategory(int id, string name)
         {
-            if (_categories.Any(c => c.Id == id)) return false;
-            _categories.Add(new Category { Id = id, Name = name });
+            if (categories.Any(c => c.Id == id)) return false;
+            categories.Add(new Category { Id = id, Name = name });
             return true;
         }
 
-        // Part II overload (auto-id for API create)
         public Category CreateCategory(string name)
         {
-            int newId = _categories.Any() ? _categories.Max(c => c.Id) + 1 : 1;
-            var newCategory = new Category { Id = newId, Name = name };
-            _categories.Add(newCategory);
-            return newCategory;
+            int newId = categories.Any() ? categories.Max(c => c.Id) + 1 : 1;
+            var c = new Category { Id = newId, Name = name };
+            categories.Add(c);
+            return c;
         }
     }
 
+    // Echo Server
+
     public class EchoServer
     {
-        private TcpListener _server;
-        public int Port { get; set; }
-        private readonly CategoryService _categoryService = new();
-        private readonly JsonSerializerOptions _jsonOptions = new()
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
+        private readonly int port;
+        private TcpListener listener;
+        private readonly CategoryService service = new();
+        private readonly JsonSerializerOptions json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-        public EchoServer(int port) { Port = port; }
+        public EchoServer(int port) { this.port = port; }
 
         public void Run()
         {
-            _server = new TcpListener(IPAddress.Loopback, Port);
-            _server.Start();
-            Console.WriteLine($"Server started on port {Port}");
+            listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            Console.WriteLine($"Server running on port {port}");
 
-            // Blocking accept loop - keep the process alive so external test runners
-            // can connect to the service at the expected port.
             while (true)
             {
-                try
-                {
-                    var client = _server.AcceptTcpClient(); // blocks until a client connects
-                    _ = Task.Run(() => HandleClient(client));
-                }
-                catch (SocketException)
-                {
-                    // Listener stopped or error occurred - exit loop
-                    break;
-                }
+                var client = listener.AcceptTcpClient();
+                Task.Run(() => HandleClient(client));
             }
         }
 
         private void HandleClient(TcpClient client)
         {
-            using (client)
-            using (var strm = client.GetStream())
-            {
-                strm.ReadTimeout = 2000;
+            using var stream = client.GetStream();
+            string text = ReadRequest(stream);
+            if (string.IsNullOrWhiteSpace(text)) return;
 
-                string requestText = ReadRequestText(strm);
+            Request req;
+            try { req = JsonSerializer.Deserialize<Request>(text, json); }
+            catch { Write(stream, new Response { Status = "4 Bad Request" }); return; }
 
-                // If there is nothing to read (empty or whitespace), just ignore and leave the socket open a bit
-                if (string.IsNullOrWhiteSpace(requestText))
-                {
-                    // No response (first test simply checks you can connect)
-                    return;
-                }
+            var validator = new RequestValidator();
+            var check = validator.ValidateRequest(req);
+            if (!check.Status.StartsWith("1")) { Write(stream, check); return; }
 
-                Response response;
-
-                // Try to parse the request JSON
-                Request request = null;
-                try
-                {
-                    request = JsonSerializer.Deserialize<Request>(requestText, _jsonOptions);
-                }
-                catch
-                {
-                    // If the JSON is completely malformed, treat it as bad request
-                    response = new Response { Status = "4 Bad Request" };
-                    WriteResponseAndClose(strm, response);
-                    return;
-                }
-
-                // Validate basic CJTP fields
-                var validator = new RequestValidator();
-                var validation = validator.ValidateRequest(request);
-                if (!validation.Status.StartsWith("1"))
-                {
-                    WriteResponseAndClose(strm, validation);
-                    return;
-                }
-
-                // If valid, route and execute
-                response = RouteAndExecute(request);
-
-                WriteResponseAndClose(strm, response);
-            }
+            Write(stream, Route(req));
         }
 
-        private string ReadRequestText(NetworkStream strm)
+        private string ReadRequest(NetworkStream s)
         {
             var buf = new byte[2048];
-            using var ms = new MemoryStream();
+            int n = s.Read(buf, 0, buf.Length);
+            return Encoding.UTF8.GetString(buf, 0, n);
+        }
+
+        private void Write(NetworkStream s, Response r)
+        {
+            var data = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(r, json));
+            s.Write(data, 0, data.Length);
+        }
+
+        // Routing
+        private Response Route(Request req)
+        {
+            string method = req.Method.ToLower();
+            var parser = new UrlParser();
+            if (!parser.ParseUrl(req.Path)) return Bad();
+
+            if (!parser.Path.Equals("/api/categories", StringComparison.OrdinalIgnoreCase))
+                return NotFound();
+
+            int id = parser.HasId ? int.Parse(parser.Id) : -1;
+
+            return method switch
+            {
+                "read"   => !parser.HasId ? Ok(service.GetCategories()) : (service.GetCategory(id) is { } c ? Ok(c) : NotFound()),
+                "create" => parser.HasId ? Bad() : Create(req.Body),
+                "update" => parser.HasId ? Update(id, req.Body) : Bad(),
+                "delete" => parser.HasId ? Delete(id) : Bad(),
+                "echo"   => new Response { Status = "1 Ok", Body = req.Body },
+                _        => Bad()
+            };
+        }
+
+        private Response Ok(object data) =>
+            new() { Status = "1 Ok", Body = JsonSerializer.Serialize(data, json) };
+
+        private Response Create(string body)
+        {
             try
             {
-                while (true)
-                {
-                    int n = strm.Read(buf, 0, buf.Length);
-                    if (n <= 0) break;
-                    ms.Write(buf, 0, n);
-
-                    // If we read less than the buffer or no more data is available, assume request is complete
-                    if (n < buf.Length && !strm.DataAvailable) break;
-                }
+                using var doc = JsonDocument.Parse(body);
+                string name = doc.RootElement.GetProperty("name").GetString();
+                if (string.IsNullOrWhiteSpace(name)) return Bad();
+                var c = service.CreateCategory(name);
+                return new Response { Status = "2 Created", Body = JsonSerializer.Serialize(c, json) };
             }
-            catch (IOException)
-            {
-                // Read timed out — treat as no/partial request
-            }
-            return Encoding.UTF8.GetString(ms.ToArray());
+            catch { return Bad(); }
         }
 
-        private void WriteResponseAndClose(NetworkStream strm, Response response)
+        private Response Update(int id, string body)
         {
-            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(response, _jsonOptions));
-            strm.Write(bytes, 0, bytes.Length);
-            // Important for tests: close after single request/response
-            strm.Flush();
-            try { strm.Dispose(); } catch { /* ignore */ }
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                string name = doc.RootElement.GetProperty("name").GetString();
+                if (string.IsNullOrWhiteSpace(name)) return Bad();
+                return service.UpdateCategory(id, name) ? new Response { Status = "3 Updated" } : NotFound();
+            }
+            catch { return Bad(); }
         }
 
-        private Response RouteAndExecute(Request req)
-        {
-            var method = req.Method.ToLowerInvariant();
-            var path = req.Path ?? string.Empty;
+        private Response Delete(int id) =>
+            service.DeleteCategory(id) ? new Response { Status = "1 Ok" } : NotFound();
 
-            // Only API supported: /api/categories
-            bool isCategoriesRoot = string.Equals(path, "/api/categories", StringComparison.OrdinalIgnoreCase);
-            bool isCategoriesWithTail = path.StartsWith("/api/categories/", StringComparison.OrdinalIgnoreCase);
-
-            if (!(isCategoriesRoot || isCategoriesWithTail))
-            {
-                return new Response { Status = "5 Not found" }; // Unknown path
-            }
-
-            // If there's a tail after /api/categories/, ensure it's a valid integer id; otherwise it's a Bad Request
-            int id = -1;
-            if (isCategoriesWithTail)
-            {
-                var tail = path.Substring("/api/categories/".Length);
-                if (!int.TryParse(tail, out id))
-                {
-                    return new Response { Status = "4 Bad Request" };
-                }
-            }
-
-            switch (method)
-            {
-                case "read":
-                    if (isCategoriesRoot)
-                    {
-                        var all = _categoryService.GetCategories();
-                        var body = JsonSerializer.Serialize(all, _jsonOptions);
-                        return new Response { Status = "1 Ok", Body = body };
-                    }
-                    else
-                    {
-                        var cat = _categoryService.GetCategory(id);
-                        if (cat == null) return new Response { Status = "5 Not found" };
-                        var body = JsonSerializer.Serialize(cat, _jsonOptions);
-                        return new Response { Status = "1 Ok", Body = body };
-                    }
-
-                case "create":
-                    if (!isCategoriesRoot)
-                    {
-                        // create must not have an id in the path
-                        return new Response { Status = "4 Bad Request" };
-                    }
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(req.Body);
-                        string name = doc.RootElement.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String
-                                      ? nameProp.GetString()
-                                      : null;
-                        if (string.IsNullOrWhiteSpace(name))
-                            return new Response { Status = "4 Bad Request" };
-
-                        var created = _categoryService.CreateCategory(name);
-                        var body = JsonSerializer.Serialize(created, _jsonOptions);
-                        return new Response { Status = "2 Created", Body = body };
-                    }
-                    catch
-                    {
-                        return new Response { Status = "4 Bad Request" };
-                    }
-
-                case "update":
-                    if (!isCategoriesWithTail)
-                    {
-                        // update must include id
-                        return new Response { Status = "4 Bad Request" };
-                    }
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(req.Body);
-                        string name = doc.RootElement.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String
-                                      ? nameProp.GetString()
-                                      : null;
-                        if (string.IsNullOrWhiteSpace(name))
-                            return new Response { Status = "4 Bad Request" };
-
-                        var ok = _categoryService.UpdateCategory(id, name);
-                        if (!ok) return new Response { Status = "5 Not found" };
-                        return new Response { Status = "3 Updated" };
-                    }
-                    catch
-                    {
-                        return new Response { Status = "4 Bad Request" };
-                    }
-
-                case "delete":
-                    if (!isCategoriesWithTail)
-                    {
-                        // delete must include id
-                        return new Response { Status = "4 Bad Request" };
-                    }
-                    var deleted = _categoryService.DeleteCategory(id);
-                    if (!deleted) return new Response { Status = "5 Not found" };
-                    return new Response { Status = "1 Ok" };
-
-                default:
-                    // Shouldn't happen; validator already guards this
-                    return new Response { Status = "4 Illegal method" };
-            }
-        }
+        private Response Bad() => new() { Status = "4 Bad Request" };
+        private Response NotFound() => new() { Status = "5 Not found" };
     }
 }
